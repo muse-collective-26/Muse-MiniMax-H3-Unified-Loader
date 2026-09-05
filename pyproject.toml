@@ -1,0 +1,13 @@
+[project]
+name = "muse-minimax-h3-unified-loader"
+description = "One hardware-aware loader for the whole MiniMax H3 Director model stack — model, CLIP, VAEs, LoRAs, and attention patches — auto-selected from your detected VRAM. Routes model loading through an adaptive VRAM reservation system that measures real usage per render shape and tightens itself over repeat runs, rather than a fixed guess."
+version = "1.1.0"
+license = { file = "LICENSE" }
+
+[project.urls]
+Repository = "https://github.com/muse-collective-26/Muse-MiniMax-H3-Unified-Loader"
+
+[tool.comfy]
+PublisherId = "muse-collective"
+DisplayName = "Muse MiniMax H3 Unified Loader"
+Icon = ""
