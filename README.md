@@ -8,9 +8,18 @@ Built by [Muse Collective](https://musecollective.co.uk) for use with [Muse Mini
 ![MiniMax H3](https://img.shields.io/badge/MiniMax-H3-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 
+> **Before you run this node, install these two dependencies manually — ComfyUI Manager's "install missing custom nodes" prompt will NOT catch them.** This node calls them internally at runtime rather than placing them as their own nodes in the workflow graph, which is the only thing Manager's missing-node scanner checks. Skipping this step gets you a `RuntimeError: Required node '...' is not installed or did not load.` the moment you run the node.
+> - **[ComfyUI-H3-Multishot](https://github.com/jlucasmcrell/ComfyUI-H3-Multishot)** — always required.
+> - **[ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes)** — required if you leave any of SageAttention / low-VRAM attention / chunked feed-forward switched on (all on by default).
+>
+> Install both the same way as this node (Manager search, or `git clone` into `custom_nodes`), then restart ComfyUI.
+
 ---
 
 ## Changelog
+
+### 2026-09-05
+- **Missing-dependency errors now name the exact package and where to get it**, instead of a bare "not installed or did not load." Root cause of the confusing failure: `H3ModelLoaderAny` and the KJNodes attention patches are looked up dynamically at runtime, not placed as their own nodes in the saved workflow graph — so ComfyUI Manager's "install missing custom nodes" scanner, which only reads node types actually present in the workflow JSON, never gets a chance to flag them. A fresh install without these two dependencies got no prompt at all, just a plain crash. The error message itself now states which package is missing and links to it directly.
 
 ### 2026-09-04
 - **Removed Sol-Attn as an attention option entirely.** Confirmed via a controlled A/B test (identical GGUF Low VRAM run, only this toggle changed) that it causes a real stall — VRAM unload finds almost nothing to free, and the render sits at ~99% GPU utilization with no progress for minutes. Every other attention option here (core attention backend, SageAttention, low-VRAM attention, chunked feed-forward) has run clean in every render tested; Sol-Attn was the only one that produced this failure. Removed from the node's inputs and from the optional-dependencies list below, so no one can switch it on and hit this by surprise.

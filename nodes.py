@@ -178,11 +178,36 @@ class MuseMiniMaxH3UnifiedLoader:
         higher = [p for p in available if cls.ORDER.index(p) > index]
         return min(higher, key=cls.ORDER.index), preferred
 
-    @staticmethod
-    def _registry_class(name):
+    # [2026-09-05] Added: these nodes are looked up dynamically at runtime, not
+    # wired as their own nodes in the saved workflow graph — so when one is
+    # missing, ComfyUI Manager's "install missing custom nodes" scanner (which
+    # only reads node types actually present in the workflow JSON) has no way
+    # to know it's needed. Confirmed directly: a fresh install with this
+    # loader's dependencies not yet installed gets no such prompt at all, just
+    # a bare RuntimeError - someone who downloads this without also watching a
+    # setup video would be stuck. Naming the exact required package and where
+    # to get it, per node, so the error is self-explanatory on its own.
+    _REQUIRED_NODE_SOURCES = {
+        "H3ModelLoaderAny": "ComfyUI-H3-Multishot (https://github.com/jlucasmcrell/ComfyUI-H3-Multishot)",
+        "H3ClipLoaderAny": "ComfyUI-H3-Multishot (https://github.com/jlucasmcrell/ComfyUI-H3-Multishot)",
+        "ModelAttentionBackend": "ComfyUI-KJNodes (https://github.com/kijai/ComfyUI-KJNodes)",
+        "MiniMaxH3MemoryEfficientSageAttentionPatch": "ComfyUI-KJNodes (https://github.com/kijai/ComfyUI-KJNodes)",
+        "MiniMaxLowVRAMAttention": "ComfyUI-KJNodes (https://github.com/kijai/ComfyUI-KJNodes)",
+        "MiniMaxChunkFeedForward": "ComfyUI-KJNodes (https://github.com/kijai/ComfyUI-KJNodes)",
+    }
+
+    @classmethod
+    def _registry_class(cls, name):
         node_class = nodes.NODE_CLASS_MAPPINGS.get(name)
         if node_class is None:
-            raise RuntimeError(f"Required node '{name}' is not installed or did not load.")
+            source = cls._REQUIRED_NODE_SOURCES.get(name, "a required custom node package")
+            raise RuntimeError(
+                f"Required node '{name}' is not installed or did not load. "
+                f"Install {source} into your ComfyUI/custom_nodes folder and restart ComfyUI. "
+                f"This dependency won't show up in ComfyUI Manager's 'install missing custom "
+                f"nodes' prompt, since it isn't a node placed directly in the workflow graph — "
+                f"it has to be installed manually."
+            )
         return node_class
 
     def _load_model(self, filename, reserve):
