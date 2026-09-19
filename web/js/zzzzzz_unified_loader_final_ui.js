@@ -3,6 +3,7 @@ import { app } from "../../../scripts/app.js";
 const NODE_NAME = "MuseMiniMaxH3UnifiedLoader";
 const GROUPS = [
   { id: "profile", title: "VRAM QUALITY PROFILE", subtitle: "Automatic detects GPU VRAM and selects one tier for every branch", color: "#8fa5bd", fill: "rgba(55,70,88,.30)", names: ["profile"] },
+  { id: "pinned", title: "PINNED MEMORY POOL", subtitle: "Page-locked RAM buffer (ComfyUI default ~40% of RAM) — lower it to free system RAM; may slow CPU-GPU transfers", color: "#6fbf73", fill: "rgba(34,88,40,.26)", names: ["pinned_memory_cap"] },
   { id: "reference", title: "REFERENCE MODEL", subtitle: "Ref2VA checkpoints — selected tier feeds the Director model socket", color: "#a970ff", fill: "rgba(75,42,112,.28)", names: ["low_vram_model", "balanced_model", "maximum_quality_model"] },
   { id: "fl2va", title: "FIRST / LAST-FRAME MODEL", subtitle: "FL2VA checkpoints — selected tier feeds the model_fl2va socket", color: "#668cff", fill: "rgba(36,55,116,.28)", names: ["low_vram_fl2va", "balanced_fl2va", "maximum_quality_fl2va"] },
   { id: "clip", title: "SHARED CLIP ENCODER", subtitle: "Used by both modes; leave the GGUF vision projector on Auto", color: "#e5cf55", fill: "rgba(112,96,24,.26)", names: ["low_vram_clip", "low_vram_mmproj", "balanced_clip", "balanced_mmproj", "maximum_quality_clip", "maximum_quality_mmproj"] },
@@ -12,7 +13,13 @@ const GROUPS = [
   { id: "advanced", title: "ADVANCED", subtitle: "Normally leave activation reserve on Automatic (0)", color: "#7f91aa", fill: "rgba(51,63,79,.30)", names: ["activation_reserve_gb"] },
 ];
 
+GROUPS.push({ id: "model_selection", title: "MODELS TO LOAD", subtitle: "Match the Director mode; skips unused transformer weights and patches", color: "#8fa5bd", fill: "rgba(55,70,88,.30)", names: ["models_to_load"] });
+GROUPS.find(group => group.id === "attention").names.splice(5, 0, "high_res_stability");
+
 const LABELS = {
+  high_res_stability: "High-Res Stability",
+  models_to_load: "Models to Load",
+  pinned_memory_cap: "Pinned memory cap",
   profile: "VRAM quality profile",
   low_vram_model: "Low VRAM — Reference model",
   balanced_model: "Balanced — Reference model",
@@ -42,6 +49,7 @@ const LABELS = {
 };
 
 const ATTENTION_CHILDREN = new Set([
+  "high_res_stability",
   "attention_backend", "sol_attention", "sol_tau", "sage_attention",
   "low_vram_attention", "attention_head_chunks", "chunk_feed_forward",
   "feed_forward_chunks", "feed_forward_threshold",
@@ -124,7 +132,7 @@ function install(node) {
   node._museFinalUIInstalled = true;
   node.properties ||= {};
   node.properties.muse_loader_final_collapsed ||= {
-    profile: false, reference: false, fl2va: false, clip: false,
+    profile: false, pinned: false, reference: false, fl2va: false, clip: false,
     vae: false, loras: false, attention: false, advanced: true,
   };
   const native = [...(node.widgets || [])];

@@ -254,25 +254,48 @@ class MuseMiniMaxH3UnifiedLoader:
         return model
 
     def load(self, **values):
+        # [2026-09-09] Apply the pinned-memory pool cap before anything loads or
+        # pins. MAX_PINNED_MEMORY is a live module global read on every pin/evict
+        # check, so mutating it here takes effect for this run. Only lowers it.
+        _pin_choice = str(values.get("pinned_memory_cap", "Default (40% of RAM)"))
+        if _pin_choice and _pin_choice[0].isdigit():
+            try:
+                import comfy.model_management as _mm
+                _cap = int(float(_pin_choice.split()[0]) * (1024 ** 3))
+                _was = float(_mm.MAX_PINNED_MEMORY) / (1024 ** 3)
+                if _mm.MAX_PINNED_MEMORY <= 0 or _cap < _mm.MAX_PINNED_MEMORY:
+                    _mm.MAX_PINNED_MEMORY = _cap
+                    LOGGER.info("[Muse Unified Loader] pinned-memory pool capped at %s "
+                                "(was %.1f GB).", _pin_choice, _was)
+            except Exception as _exc:
+                LOGGER.warning("[Muse Unified Loader] could not apply pinned-memory cap: %s", _exc)
         vram_gb = self._vram_gb()
         selected, preferred = self._select_profile(values["profile"], vram_gb, values)
         prefix = self._prefix(selected)
-        model = self._load_model(values[f"{prefix}_model"], values["activation_reserve_gb"])
+        branch = values.get("models_to_load", "Both / Mixed")
+        if branch not in ("Both / Mixed", "Reference only", "First/Last only"):
+            raise ValueError("Unknown Models to Load selection.")
+        if branch == "First/Last only" and values["model_fl2va"] == OFF:
+            raise ValueError("First/Last only requires a First/Last model in the selected quality profile.")
+        model = None
+        if branch != "First/Last only":
+            model = self._load_model(values[f"{prefix}_model"], values["activation_reserve_gb"])
         clip = self._load_clip(values[f"{prefix}_clip"], values[f"{prefix}_mmproj"])
         fl2va = None
-        if values["model_fl2va"] != OFF:
+        if branch != "Reference only" and values["model_fl2va"] != OFF:
             fl2va = self._load_model(values["model_fl2va"], values["activation_reserve_gb"])
 
         for index in range(1, 4):
             filename = values[f"lora_{index}"]
             strength = values[f"lora_{index}_strength"]
             target = values[f"lora_{index}_target"]
-            if target in ("Both models", "Reference model"):
+            if model is not None and target in ("Both models", "Reference model"):
                 model = self._apply_lora(model, filename, strength)
             if fl2va is not None and target in ("Both models", "First/Last model"):
                 fl2va = self._apply_lora(fl2va, filename, strength)
 
-        model = self._patch_attention(model, values)
+        if model is not None:
+            model = self._patch_attention(model, values)
         if fl2va is not None:
             fl2va = self._patch_attention(fl2va, values)
 
@@ -294,6 +317,15 @@ class MuseMiniMaxH3UnifiedLoader:
             status += f" {preferred} was requested/recommended but disabled; using {selected}."
         if fl2va is None:
             status += " First/Last-frame model is disabled."
+        status += f" Models to Load: {branch}."
+        if branch != "Both / Mixed":
+            active = model if model is not None else fl2va
+            active.model_options = dict(active.model_options)
+            active.model_options["_muse_models_to_load"] = branch
+            # Compatibility aliases, NOT another load or clone: wrappers may be eager.
+            model = active
+            fl2va = active
+            status += " Excluded transformer was not loaded; its socket shares the active model handle."
         LOGGER.info("[Muse Unified Loader] %s", status)
         return {
             "ui": {"text": [status]},

@@ -35,7 +35,7 @@ class MuseMiniMaxH3UnifiedLoader(_BaseLoader):
         result = super().load(**values)
         status = result["result"][-1]
         selected_fl2va = values["model_fl2va"]
-        if selected_fl2va != OFF:
+        if selected_fl2va != OFF and values.get("models_to_load", "Both / Mixed") != "Reference only":
             status += f" First/Last-frame branch uses the {selected} model: {selected_fl2va}."
         result["result"] = (*result["result"][:-1], status)
         result["ui"] = {"text": [status]}
