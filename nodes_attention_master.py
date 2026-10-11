@@ -4,10 +4,36 @@ from .nodes_userfriendly import MuseMiniMaxH3UnifiedLoader as _FriendlyLoader
 from .high_res_stability import apply_high_res_stability
 
 
+def _attention_boolean(value, name):
+    """Accept old text toggles without treating the string 'Off' as true."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("true", "on", "enabled", "1"):
+            return True
+        if text in ("false", "off", "disabled", "0"):
+            return False
+    elif isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    raise ValueError(f"{name} must be an ON/OFF boolean, got {value!r}")
+
+
 class MuseMiniMaxH3UnifiedLoader(_FriendlyLoader):
     @classmethod
     def INPUT_TYPES(cls):
         schema = super().INPUT_TYPES()
+        for name, tooltip in (
+            ("sage_attention", "MiniMax H3-specific memory-efficient Sage patch. Separate from ComfyUI's launch-time --use-sage-attention setting."),
+            ("attention_backend", "Per-model backend override. Off means no override from this control; it does not disable launch-time Sage or the MiniMax-specific Sage toggle."),
+        ):
+            spec = schema["required"].get(name)
+            if spec:
+                options = dict(spec[1]) if len(spec) > 1 else {}
+                options["tooltip"] = tooltip
+                if name == "sage_attention":
+                    options.update(label_on="ON", label_off="OFF")
+                schema["required"][name] = (spec[0], options)
         # Append for saved-workflow compatibility. The fascia repositions this
         # control visually at the top of the Attention & Memory card.
         schema["required"]["attention_enabled"] = (
@@ -39,6 +65,10 @@ class MuseMiniMaxH3UnifiedLoader(_FriendlyLoader):
             "BOOLEAN", {"default": False, "label_on": "ON", "label_off": "OFF",
             "tooltip": "Experimental fix for corrupted or noisy output at higher resolutions and longer clips. Requires Sage Attention and attention optimisations ON. May use extra VRAM."},
         )
+        # Optional and appended: existing saved widgets retain their positions.
+        schema.setdefault("optional", {})["extra_loras"] = (
+            "STRING", {"default": "[]", "multiline": False},
+        )
         return schema
 
     def _patch_attention(self, model, values):
@@ -50,6 +80,10 @@ class MuseMiniMaxH3UnifiedLoader(_FriendlyLoader):
         return model
 
     def load(self, **values):
+        for name in ("attention_enabled", "sage_attention", "high_res_stability",
+                     "low_vram_attention", "chunk_feed_forward"):
+            if name in values:
+                values[name] = _attention_boolean(values[name], name)
         result = super().load(**values)
         if values.get("high_res_stability", False):
             active = values.get("attention_enabled", True) and values.get("sage_attention", False)

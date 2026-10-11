@@ -96,6 +96,7 @@ function makeHeader(node, group) {
   return {
     name: `muse_final_section_${group.id}`,
     type: "muse_loader_final_section",
+    serialize: false,
     value: group.title,
     options: { serialize: false },
     computeSize: (width) => [width, 44],
@@ -127,7 +128,25 @@ function makeHeader(node, group) {
   };
 }
 
-function install(node) {
+function booleanValue(value, name) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const text = value.trim().toLowerCase();
+    if (["true", "on", "enabled", "1"].includes(text)) return true;
+    if (["false", "off", "disabled", "0"].includes(text)) return false;
+  } else if (value === 0 || value === 1) return value === 1;
+  throw new Error(`Muse Unified Loader: ${name} must be ON or OFF; got ${JSON.stringify(value)}`);
+}
+
+function normalizeBooleans(node) {
+  for (const widget of node.widgets || []) {
+    if (node._museBooleanNames?.has(widget.name)) {
+      widget.value = booleanValue(widget.value, widget.name);
+    }
+  }
+}
+
+function install(node, booleanNames) {
   if (node._museFinalUIInstalled) return;
   node._museFinalUIInstalled = true;
   node.properties ||= {};
@@ -136,18 +155,38 @@ function install(node) {
     vae: false, loras: false, attention: false, advanced: true,
   };
   const native = [...(node.widgets || [])];
+  node._museBooleanNames = booleanNames;
+  for (const widget of native) {
+    if (!booleanNames.has(widget.name)) continue;
+    const serializeValue = widget.serializeValue;
+    widget.serializeValue = async function (...args) {
+      this.value = booleanValue(this.value, this.name);
+      const value = serializeValue ? await serializeValue.apply(this, args) : this.value;
+      return booleanValue(value, this.name);
+    };
+  }
+  node._museInputDefaults = Object.fromEntries(native.map(widget => [widget.name, widget.value]));
   const byName = new Map(native.map((widget) => [widget.name, widget]));
   for (const [name, label] of Object.entries(LABELS)) {
     if (byName.get(name)) byName.get(name).label = label;
   }
-  const groupedNames = new Set(GROUPS.flatMap((group) => group.names));
-  const rebuilt = native.filter((widget) => !groupedNames.has(widget.name));
-  for (const group of GROUPS) {
+  const groups = node._museFinalGroups = GROUPS.map(group => ({ ...group, names: [...group.names] }));
+  const groupedNames = new Set(groups.flatMap((group) => group.names));
+  const rebuilt = native.filter((widget) => !groupedNames.has(widget.name) && widget.name !== "extra_loras");
+  for (const group of groups) {
     group.widgets = group.names.map((name) => byName.get(name)).filter(Boolean);
     rebuilt.push(makeHeader(node, group), ...group.widgets);
     if (node.properties.muse_loader_final_collapsed[group.id]) group.widgets.forEach(hide);
   }
   node.widgets = rebuilt;
+  const extra = byName.get("extra_loras");
+  if (extra) {
+    // Keep this serialized payload LAST, not among the visually inserted rows.
+    node.widgets.push(extra);
+    hide(extra);
+    node._museExtraLoraWidget = extra;
+    rebuildExtraLoras(node);
+  }
   const master = byName.get("attention_enabled");
   if (master) {
     const callback = master.callback;
@@ -164,7 +203,8 @@ function install(node) {
 
 function restore(node) {
   setTimeout(() => {
-    for (const group of GROUPS) {
+    rebuildExtraLoras(node);
+    for (const group of node._museFinalGroups || []) {
       const collapsed = !!node.properties?.muse_loader_final_collapsed?.[group.id];
       group.widgets?.forEach((widget) => collapsed ? hide(widget) : show(widget));
     }
@@ -173,20 +213,121 @@ function restore(node) {
   }, 2);
 }
 
+function rebuildExtraLoras(node, rows = null) {
+  const payload = node._museExtraLoraWidget;
+  const group = node._museFinalGroups?.find(group => group.id === "loras");
+  if (!payload || !group) return;
+  if (rows === null) {
+    try {
+      rows = JSON.parse(payload.value || "[]");
+      if (!Array.isArray(rows) || rows.some(row => !row || typeof row !== "object")) throw new Error("Invalid rows");
+    } catch (error) {
+      console.error("[Muse Unified Loader] Cannot restore additional LoRAs", error);
+      return; // Never overwrite an unreadable saved payload silently.
+    }
+  }
+  node.widgets = node.widgets.filter(widget => !widget._museExtraLoraControl);
+  group.widgets = group.widgets.filter(widget => !widget._museExtraLoraControl);
+  const controls = [];
+  const commit = () => {
+    payload.value = JSON.stringify(rows);
+    node.graph?.change?.();
+    app.graph?.setDirtyCanvas?.(true, true);
+  };
+  const addControl = (type, name, value, callback, options = {}) => {
+    const widget = node.addWidget(type, name, value, callback, { ...options, serialize: false });
+    widget.serialize = false; // LiteGraph's positional save/restore checks this property.
+    widget._museExtraLoraControl = true;
+    controls.push(widget);
+    return widget;
+  };
+  const first = node.widgets.find(widget => widget.name === "lora_1");
+  const values = first?.options?.values || ["(disabled)"];
+  rows.forEach((row, index) => {
+    const label = `LoRA ${index + 4}`;
+    addControl("combo", `${label} name`, row.name ?? "(disabled)", value => { row.name = value; commit(); }, { values });
+    addControl("number", `${label} strength`, row.strength ?? 1, value => { row.strength = value; commit(); }, { min: -10, max: 10, step: 0.5, precision: 2 });
+    addControl("combo", `${label} target`, row.target ?? "Both models", value => { row.target = value; commit(); }, { values: ["Both models", "Reference model", "First/Last model"] });
+    addControl("button", `Remove ${label}`, null, () => {
+      rows.splice(index, 1); commit(); rebuildExtraLoras(node, rows); resize(node);
+    });
+  });
+  addControl("button", "+ Add LoRA", null, () => {
+    rows.push({ name: "(disabled)", strength: 1, target: "Both models" });
+    commit(); rebuildExtraLoras(node, rows); resize(node);
+  });
+  // addWidget appends; move only these nonserialized controls into the LoRA section.
+  node.widgets = node.widgets.filter(widget => !widget._museExtraLoraControl);
+  const anchor = node.widgets.indexOf(group.widgets[group.widgets.length - 1]);
+  node.widgets.splice(anchor + 1, 0, ...controls);
+  group.widgets.push(...controls);
+  if (node.properties.muse_loader_final_collapsed.loras) controls.forEach(hide);
+}
+
+function restoreSavedValues(node, info) {
+  // Older workflows saved decorative headings among positional values. Adding
+  // High-Res Stability inside that visual section shifted every later setting.
+  // Restore by name even when the frontend's named-restore feature is disabled.
+  let named = info?.widgets_values_named;
+  if (!named || typeof named !== "object" || Array.isArray(named)) {
+    const values = info?.widgets_values;
+    if (!Array.isArray(values) || !values.includes("ATTENTION & MEMORY")) return;
+    named = {};
+    const titles = new Set(GROUPS.map(group => group.title));
+    for (const group of GROUPS) {
+      const start = values.indexOf(group.title);
+      if (start < 0) continue;
+      let end = start + 1;
+      while (end < values.length && !titles.has(values[end])) end++;
+      const saved = values.slice(start + 1, end);
+      let names = group.names.filter(name => name in node._museInputDefaults);
+      if (group.id === "attention" && saved.length === names.length - 1) {
+        names = names.filter(name => name !== "high_res_stability");
+      }
+      if (saved.length !== names.length) {
+        console.warn(`[Muse Unified Loader] Unrecognised legacy ${group.title} layout; not guessing its values.`);
+        continue;
+      }
+      names.forEach((name, index) => { named[name] = saved[index]; });
+    }
+  }
+  for (const widget of node.widgets || []) {
+    if (!(widget.name in (node._museInputDefaults || {}))) continue;
+    if (Object.hasOwn(named, widget.name)) widget.value = named[widget.name];
+    else if (widget.name === "high_res_stability" || widget.name === "extra_loras") {
+      widget.value = node._museInputDefaults[widget.name];
+    }
+  }
+}
+
 app.registerExtension({
   name: "Muse.MiniMaxH3UnifiedLoader.FinalUI",
   async beforeRegisterNodeDef(nodeType, nodeData) {
     if (nodeData.name !== NODE_NAME) return;
+    const booleanNames = new Set(Object.entries({
+      ...nodeData.input?.required, ...nodeData.input?.optional,
+    }).filter(([, spec]) => spec[0] === "BOOLEAN").map(([name]) => name));
     const created = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
       const result = created?.apply(this, arguments);
-      install(this);
+      install(this, booleanNames);
       return result;
     };
     const configured = nodeType.prototype.onConfigure;
-    nodeType.prototype.onConfigure = function () {
+    nodeType.prototype.onConfigure = function (info) {
       const result = configured?.apply(this, arguments);
+      restoreSavedValues(this, info);
+      normalizeBooleans(this);
       restore(this);
+      return result;
+    };
+    const serialized = nodeType.prototype.onSerialize;
+    nodeType.prototype.onSerialize = function (info) {
+      normalizeBooleans(this);
+      const result = serialized?.apply(this, arguments);
+      info.widgets_values_named = Object.fromEntries((this.widgets || [])
+        .filter(widget => widget.name in (this._museInputDefaults || {}))
+        .map(widget => [widget.name, widget.value]));
       return result;
     };
   },

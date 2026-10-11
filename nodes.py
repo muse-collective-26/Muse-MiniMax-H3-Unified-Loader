@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import json
+import math
 import os
 
 import folder_paths
@@ -11,6 +13,34 @@ import torch
 
 LOGGER = logging.getLogger(__name__)
 OFF = "(disabled)"
+
+
+def _lora_rows(values):
+    """Keep legacy slots intact; validate additional rows before loading weights."""
+    rows = [(values[f"lora_{i}"], values[f"lora_{i}_strength"],
+             values[f"lora_{i}_target"]) for i in range(1, 4)]
+    try:
+        extra = json.loads(values.get("extra_loras") or "[]")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Additional LoRAs could not be read. Check the loader's added rows.") from exc
+    if not isinstance(extra, list):
+        raise ValueError("Additional LoRAs must be a list of rows.")
+    available = set(folder_paths.get_filename_list("loras"))
+    targets = ("Both models", "Reference model", "First/Last model")
+    for index, row in enumerate(extra, 4):
+        if not isinstance(row, dict):
+            raise ValueError(f"LoRA {index}: invalid row.")
+        filename = row.get("name", OFF)
+        target = row.get("target", "Both models")
+        strength = row.get("strength", 1.0)
+        if not isinstance(filename, str) or target not in targets:
+            raise ValueError(f"LoRA {index}: invalid name or target.")
+        if isinstance(strength, bool) or not isinstance(strength, (int, float)) or not math.isfinite(strength) or not -10 <= strength <= 10:
+            raise ValueError(f"LoRA {index}: strength must be a finite number between -10 and 10.")
+        if filename != OFF and strength != 0 and filename not in available:
+            raise ValueError(f"LoRA {index}: '{filename}' is missing. Install it in models/loras or disable this row.")
+        rows.append((filename, float(strength), target))
+    return rows
 
 
 def _recursive_files(folder: str, extensions=None, reject=None):
@@ -254,6 +284,7 @@ class MuseMiniMaxH3UnifiedLoader:
         return model
 
     def load(self, **values):
+        lora_rows = _lora_rows(values)
         # [2026-09-09] Apply the pinned-memory pool cap before anything loads or
         # pins. MAX_PINNED_MEMORY is a live module global read on every pin/evict
         # check, so mutating it here takes effect for this run. Only lowers it.
@@ -285,10 +316,7 @@ class MuseMiniMaxH3UnifiedLoader:
         if branch != "Reference only" and values["model_fl2va"] != OFF:
             fl2va = self._load_model(values["model_fl2va"], values["activation_reserve_gb"])
 
-        for index in range(1, 4):
-            filename = values[f"lora_{index}"]
-            strength = values[f"lora_{index}_strength"]
-            target = values[f"lora_{index}_target"]
+        for filename, strength, target in lora_rows:
             if model is not None and target in ("Both models", "Reference model"):
                 model = self._apply_lora(model, filename, strength)
             if fl2va is not None and target in ("Both models", "First/Last model"):
@@ -302,7 +330,7 @@ class MuseMiniMaxH3UnifiedLoader:
         video_vae = nodes.VAELoader().load_vae(values["video_vae"])[0]
         audio_vae = nodes.VAELoader().load_vae(values["audio_vae"])[0]
         source = "automatically" if values["profile"] == "Automatic" else "manually"
-        enabled_loras = [values[f"lora_{i}"] for i in range(1, 4) if values[f"lora_{i}"] != OFF]
+        enabled_loras = [name for name, strength, _target in lora_rows if name != OFF and strength != 0]
         patches = []
         if values["attention_backend"] != "Off": patches.append(values["attention_backend"])
         if values["sage_attention"]: patches.append("SageAttention")
